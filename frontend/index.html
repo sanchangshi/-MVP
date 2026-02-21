@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>股票回测系统 - MVP</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- 头部 -->
+        <header class="header">
+            <h1>📈 QuantStrategy Pro</h1>
+        </header>
+
+        <!-- 主要内容区 -->
+        <div class="main-content">
+            <!-- 左侧：策略模块面板 -->
+            <aside class="strategy-panel">
+                <h2>策略模块</h2>
+                <p class="hint">点击策略添加到组合区</p>
+                <div id="strategyList" class="strategy-list">
+                    <!-- 策略模块将通过JS动态生成 -->
+                </div>
+            </aside>
+
+            <!-- 中间：策略组合区 -->
+            <section class="workspace">
+                <!-- 股票选择 -->
+                <div class="stock-selector">
+                    <div class="selector-row">
+                        <label for="stockPool">股票池：</label>
+                        <select id="stockPool">
+                            <!-- 股票池列表将通过JS动态生成 -->
+                        </select>
+                        <label for="stockSelect">选择股票：</label>
+                        <select id="stockSelect">
+                            <!-- 股票列表将通过JS动态生成 -->
+                        </select>
+                        <label for="priceMode">价格模式：</label>
+                        <select id="priceMode">
+                            <option value="close">收盘价模式</option>
+                            <option value="chase">追涨杀跌模式</option>
+                        </select>
+                        <button id="fetchDataBtn" class="btn btn-primary">获取数据</button>
+                    </div>
+                    <div class="selector-row">
+                        <label for="startDate">开始日期：</label>
+                        <input type="date" id="startDate" />
+                        <label for="endDate">结束日期：</label>
+                        <input type="date" id="endDate" />
+                    </div>
+                </div>
+
+                <!-- 策略组合区 -->
+                <div class="strategy-composer">
+                    <h3>策略组合区</h3>
+                <div id="dropZone" class="drop-zone">
+                        <p class="placeholder">点击左侧策略添加到这里</p>
+                    </div>
+                    <div class="composer-actions">
+                        <button id="runBacktestBtn" class="btn btn-success" disabled>运行回测</button>
+                        <button id="clearStrategiesBtn" class="btn btn-danger">清空策略</button>
+                    </div>
+                </div>
+
+                <!-- 回测统计 -->
+                <div id="statsPanel" class="stats-panel" style="display: none;">
+                    <h3>回测统计</h3>
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <span class="stat-label">初始资金</span>
+                            <span id="initialCapital" class="stat-value">-</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">最终资金</span>
+                            <span id="finalCapital" class="stat-value">-</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">总收益率</span>
+                            <span id="totalReturn" class="stat-value">-</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">交易次数</span>
+                            <span id="totalTrades" class="stat-value">-</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">胜率</span>
+                            <span id="winRate" class="stat-value">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 自动调优 -->
+                <div class="optimize-panel">
+                    <h3>🔧 自动调优参数</h3>
+                    <div class="optimize-container">
+                        <div class="optimize-left">
+                            <div class="optimize-controls">
+                                <div class="optimize-row">
+                                    <label>策略类型：</label>
+                                    <select id="optimizeStrategy">
+                                        <option value="ma">均线策略</option>
+                                        <option value="macd">MACD策略</option>
+                                        <option value="rsi">RSI策略</option>
+                                        <option value="bollinger">布林带策略</option>
+                                        <option value="kdj">KDJ策略</option>
+                                        <option value="turtle">海龟策略</option>
+                                        <option value="atr">ATR止损</option>
+                                        <option value="obv">OBV策略</option>
+                                    </select>
+                                </div>
+                                <div class="optimize-row">
+                                    <label>优化目标：</label>
+                                    <select id="optimizeMetric">
+                                        <option value="total_return">最大化收益率</option>
+                                        <option value="win_rate">最大化胜率</option>
+                                    </select>
+                                </div>
+                                <button id="optimizeBtn" class="btn btn-primary">开始调优</button>
+                            </div>
+                        </div>
+                        <div id="optimizeResult" class="optimize-right" style="display: none;">
+                            <h4>最优参数</h4>
+                            <div id="bestParams" class="best-params"></div>
+                            <div id="bestStats" class="best-stats"></div>
+                            <button id="applyParamsBtn" class="btn btn-success">应用最优参数</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 实时选股 -->
+                <div class="scan-panel">
+                    <h3>🎯 在股票池选择范围，按策略组合实时选股</h3>
+                    <div class="scan-container">
+                        <div class="scan-controls">
+                            <div class="scan-count-display" id="scanCountDisplay">
+                                <span class="count-label">今日剩余扫描次数：</span>
+                                <span class="count-value">2/2</span>
+                            </div>
+                            <button id="stockScanBtn" class="btn btn-primary" disabled>实时选股</button>
+                        </div>
+                        <!-- 扫描进度条 -->
+                        <div id="scanProgress" class="scan-progress" style="display: none;">
+                            <div class="progress-info">
+                                <span id="scanProgressText" class="progress-text">准备中...</span>
+                                <span id="scanProgressPercent" class="progress-percent">0%</span>
+                            </div>
+                            <div class="progress-bar-container">
+                                <div id="scanProgressBar" class="progress-bar" style="width: 0%"></div>
+                            </div>
+                            <div id="scanProgressDetail" class="progress-detail"></div>
+                        </div>
+                        <div id="scanResult" class="scan-result" style="display: none;">
+                            <h4>扫描结果</h4>
+                            <div id="scanSummary" class="scan-summary"></div>
+                            <div id="scanList" class="scan-list"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <!-- 策略详情说明 -->
+        <div class="strategy-guide">
+            <h3>📚 策略说明</h3>
+            
+            <!-- 多策略组合规则 -->
+            <div class="guide-section">
+                <h4>📊 多策略组合规则</h4>
+                <div class="guide-table">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>条件类型</th>
+                                <th>规则</th>
+                                <th>说明</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><span class="mode-tag mode-close">买入条件</span></td>
+                                <td>超过半数策略发出买入信号</td>
+                                <td>谨慎买入，减少假信号</td>
+                            </tr>
+                            <tr>
+                                <td><span class="mode-tag mode-chase">卖出条件</span></td>
+                                <td>任一策略发出卖出信号</td>
+                                <td>果断卖出，及时止损</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <!-- 价格模式说明 -->
+            <div class="guide-section">
+                <h4>💰 交易价格模式</h4>
+                <div class="guide-table">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>模式</th>
+                                <th>买入价</th>
+                                <th>卖出价</th>
+                                <th>说明</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><span class="mode-tag mode-close">收盘价模式</span></td>
+                                <td>当日收盘价</td>
+                                <td>当日收盘价</td>
+                                <td>标准回测模式</td>
+                            </tr>
+                            <tr>
+                                <td><span class="mode-tag mode-chase">追涨杀跌模式</span></td>
+                                <td>当日最高价</td>
+                                <td>当日最低价</td>
+                                <td>模拟真实交易，结果更保守</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 策略逻辑说明 -->
+            <div class="guide-section">
+                <h4>📈 策略交易逻辑</h4>
+                <div class="strategy-logic">
+                    <div class="logic-item">
+                        <span class="strategy-tag tag-ma">均线策略</span>
+                        <p><strong>买入：</strong>短期均线上穿长期均线<br/>
+                        <strong>卖出：</strong>短期均线下穿长期均线</p>
+                    </div>
+                    <div class="logic-item">
+                        <span class="strategy-tag tag-macd">MACD策略</span>
+                        <p><strong>买入：</strong>DIF线上穿DEA线<br/>
+                        <strong>卖出：</strong>DIF线下穿DEA线</p>
+                    </div>
+                    <div class="logic-item">
+                        <span class="strategy-tag tag-rsi">RSI策略</span>
+                        <p><strong>买入：</strong>RSI从超卖区回升<br/>
+                        <strong>卖出：</strong>RSI进入超买区</p>
+                    </div>
+                    <div class="logic-item">
+                        <span class="strategy-tag tag-bollinger">布林带策略</span>
+                        <p><strong>买入：</strong>价格跌破下轨后回升<br/>
+                        <strong>卖出：</strong>价格突破上轨后回落</p>
+                    </div>
+                    <div class="logic-item">
+                        <span class="strategy-tag tag-ma">KDJ策略</span>
+                        <p><strong>买入：</strong>K线上穿D线（金叉）<br/>
+                        <strong>卖出：</strong>K线下穿D线（死叉）</p>
+                    </div>
+                    <div class="logic-item">
+                        <span class="strategy-tag tag-macd">海龟策略</span>
+                        <p><strong>买入：</strong>突破N日最高价<br/>
+                        <strong>卖出：</strong>跌破M日最低价</p>
+                    </div>
+                    <div class="logic-item">
+                        <span class="strategy-tag tag-rsi">ATR止损</span>
+                        <p><strong>买入：</strong>价格突破前N日高点<br/>
+                        <strong>卖出：</strong>价格跌破ATR止损线</p>
+                    </div>
+                    <div class="logic-item">
+                        <span class="strategy-tag tag-bollinger">OBV策略</span>
+                        <p><strong>买入：</strong>OBV上穿其均线<br/>
+                        <strong>卖出：</strong>OBV下穿其均线</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 留言板 -->
+        <div class="message-board">
+            <h3>💬 用户留言</h3>
+            <div class="message-form">
+                <textarea id="messageContent" placeholder="写下您的建议或反馈..." maxlength="500"></textarea>
+                <button id="submitMessage" class="btn btn-primary">发表留言</button>
+            </div>
+            <div id="messageList" class="message-list">
+                <!-- 留言将通过JS动态生成 -->
+            </div>
+        </div>
+
+        <!-- 加载提示 -->
+        <div id="loading" class="loading" style="display: none;">
+            <div class="spinner"></div>
+            <p>正在加载数据...</p>
+        </div>
+    </div>
+
+    <script src="js/app.js"></script>
+</body>
+</html>

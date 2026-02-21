@@ -1,0 +1,30 @@
+services:
+  # 后端 API 服务
+  - type: web
+    name: stock-backtest-api
+    env: python
+    region: singapore  # 新加坡区域，国内访问较稳定
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && gunicorn app:app --bind 0.0.0.0:$PORT --workers 2
+    plan: free
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: TUSHARE_TOKEN
+        sync: false  # 需要手动设置
+
+  # 前端静态站点
+  - type: web
+    name: stock-backtest-frontend
+    env: static
+    region: singapore
+    buildCommand: echo "No build needed"
+    staticPublishPath: frontend
+    plan: free
+    envVars:
+      - key: API_BASE_URL
+        value: https://stock-backtest-api.onrender.com
+    routes:
+      - type: rewrite
+        source: /api/*
+        destination: https://stock-backtest-api.onrender.com/*
