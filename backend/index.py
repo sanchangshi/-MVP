@@ -23,7 +23,8 @@ def handler(event, context):
 
 # Custom Runtime 模式：直接运行 Flask
 if __name__ == '__main__':
-    # 阿里云 Custom Runtime 默认监听 9000 端口
-    port = int(os.environ.get('FC_SERVER_PORT', 9000))
+    # Fly.io 使用 PORT 环境变量，默认 8080
+    # 阿里云 Custom Runtime 使用 FC_SERVER_PORT，默认 9000
+    port = int(os.environ.get('PORT', os.environ.get('FC_SERVER_PORT', 8080)))
     print(f"Starting Flask server on port {port}...")
     app.run(host='0.0.0.0', port=port, debug=False)
