@@ -19,12 +19,12 @@ from strategies.obv_strategy import OBVStrategy
 app = Flask(__name__)
 CORS(app)  # 允许跨域请求
 
-# IP 调优次数限制
-optimize_count_by_ip = {}
+# 浏览器指纹调优次数限制
+optimize_count_by_fingerprint = {}
 FREE_OPTIMIZE_LIMIT = 10
 
-# IP 策略信号扫描次数限制（每天重置）
-stock_scan_count_by_ip = {}
+# 浏览器指纹策略信号扫描次数限制（每天重置）
+stock_scan_count_by_fingerprint = {}
 FREE_STOCK_SCAN_LIMIT = 3
 last_reset_date = None  # 记录上次重置日期
 
@@ -194,11 +194,13 @@ def optimize():
     使用网格搜索找到最优参数组合
     """
     try:
-        # 获取用户 IP 地址
-        user_ip = request.remote_addr
+        data = request.get_json()
+        
+        # 获取浏览器指纹（从前端传递）
+        fingerprint = data.get('fingerprint', 'unknown')
         
         # 检查调优次数限制
-        current_count = optimize_count_by_ip.get(user_ip, 0)
+        current_count = optimize_count_by_fingerprint.get(fingerprint, 0)
         if current_count >= FREE_OPTIMIZE_LIMIT:
             return jsonify({
                 'success': False,
@@ -207,8 +209,6 @@ def optimize():
                 'current_count': current_count,
                 'limit': FREE_OPTIMIZE_LIMIT
             }), 403
-        
-        data = request.get_json()
         
         symbol = data.get('symbol', '000001')
         strategy_type = data.get('strategy_type')  # 'ma' 或 'macd'
@@ -244,9 +244,9 @@ def optimize():
                 'error': '不支持的策略类型'
             }), 400
         
-        # 调优成功，增加该 IP 的计数
-        optimize_count_by_ip[user_ip] = current_count + 1
-        remaining_count = FREE_OPTIMIZE_LIMIT - optimize_count_by_ip[user_ip]
+        # 调优成功，增加该指纹的计数
+        optimize_count_by_fingerprint[fingerprint] = current_count + 1
+        remaining_count = FREE_OPTIMIZE_LIMIT - optimize_count_by_fingerprint[fingerprint]
         
         return jsonify({
             'success': True,
@@ -759,27 +759,27 @@ def stock_scan_stream():
     扫描股票池，找出当前有买入信号的股票
     自动获取最近160天数据（覆盖所有策略调优需求）
     """
-    global last_reset_date, stock_scan_count_by_ip
+    global last_reset_date, stock_scan_count_by_fingerprint
     
     from datetime import datetime, timedelta
     import json
     
     # 在请求上下文中获取这些值
-    user_ip = request.remote_addr
     data = request.get_json()
+    fingerprint = data.get('fingerprint', 'unknown')
     
     # 检查是否需要重置每日计数
     today = datetime.now().strftime('%Y-%m-%d')
     if last_reset_date != today:
-        stock_scan_count_by_ip = {}
+        stock_scan_count_by_fingerprint = {}
         last_reset_date = today
     
     # 检查扫描次数限制
-    current_count = stock_scan_count_by_ip.get(user_ip, 0)
+    current_count = stock_scan_count_by_fingerprint.get(fingerprint, 0)
     
     def generate():
         try:
-            nonlocal current_count, user_ip, data
+            nonlocal current_count, fingerprint, data
             
             if current_count >= FREE_STOCK_SCAN_LIMIT:
                 yield f"data: {json.dumps({'type': 'error', 'error': f'您今天的扫描次数已用完（{current_count}/{FREE_STOCK_SCAN_LIMIT}次），请明天再试或升级VIP', 'limit_exceeded': True}, ensure_ascii=False)}\n\n"
@@ -911,8 +911,8 @@ def stock_scan_stream():
             scan_results.sort(key=lambda x: x['signal_count'], reverse=True)
             
             # 增加计数
-            stock_scan_count_by_ip[user_ip] = current_count + 1
-            remaining_count = FREE_STOCK_SCAN_LIMIT - stock_scan_count_by_ip[user_ip]
+            stock_scan_count_by_fingerprint[fingerprint] = current_count + 1
+            remaining_count = FREE_STOCK_SCAN_LIMIT - stock_scan_count_by_fingerprint[fingerprint]
             
             # 发送完成信号
             yield f"data: {json.dumps({'type': 'complete', 'data': {'results': scan_results, 'total_stocks': actual_stocks, 'signal_stocks': len(scan_results), 'remaining_count': remaining_count}}, ensure_ascii=False)}\n\n"

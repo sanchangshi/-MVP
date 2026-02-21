@@ -12,6 +12,79 @@ const API_BASE = (() => {
     return 'http://192.168.3.4:5000';
 })();
 
+// 生成浏览器指纹
+function generateFingerprint() {
+    const components = [];
+    
+    // 屏幕信息
+    components.push(screen.width + 'x' + screen.height);
+    components.push(screen.colorDepth);
+    components.push(window.devicePixelRatio || 1);
+    
+    // 时区
+    components.push(new Date().getTimezoneOffset());
+    
+    // 语言
+    components.push(navigator.language || navigator.userLanguage);
+    
+    // 平台
+    components.push(navigator.platform);
+    
+    // 用户代理
+    components.push(navigator.userAgent);
+    
+    // Canvas 指纹
+    try {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        ctx.textBaseline = 'top';
+        ctx.font = '14px Arial';
+        ctx.fillStyle = '#f60';
+        ctx.fillRect(125, 1, 62, 20);
+        ctx.fillStyle = '#069';
+        ctx.fillText('Browser Fingerprint', 2, 15);
+        components.push(canvas.toDataURL());
+    } catch (e) {
+        components.push('canvas-error');
+    }
+    
+    // WebGL 指纹
+    try {
+        const canvas = document.createElement('canvas');
+        const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+        if (gl) {
+            const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+            if (debugInfo) {
+                components.push(gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL));
+                components.push(gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL));
+            }
+        }
+    } catch (e) {
+        components.push('webgl-error');
+    }
+    
+    // 生成哈希
+    const fingerprint = components.join('###');
+    let hash = 0;
+    for (let i = 0; i < fingerprint.length; i++) {
+        const char = fingerprint.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash;
+    }
+    return 'fp_' + Math.abs(hash).toString(36);
+}
+
+// 获取或创建浏览器指纹
+const BROWSER_FINGERPRINT = (() => {
+    const stored = localStorage.getItem('browser_fingerprint');
+    if (stored) {
+        return stored;
+    }
+    const fingerprint = generateFingerprint();
+    localStorage.setItem('browser_fingerprint', fingerprint);
+    return fingerprint;
+})();
+
 // 全局状态
 const state = {
     stockPools: {},  // 股票池列表
@@ -501,7 +574,8 @@ async function runOptimize() {
                 initial_capital: 100000,
                 price_mode: priceMode,
                 start_date: startDate,
-                end_date: endDate
+                end_date: endDate,
+                fingerprint: BROWSER_FINGERPRINT
             })
         });
 
@@ -895,7 +969,8 @@ async function runStockScan() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 pool,
-                strategies
+                strategies,
+                fingerprint: BROWSER_FINGERPRINT
             })
         });
         
