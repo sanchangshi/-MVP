@@ -25,3 +25,7 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Huawei Cloud build
+backend/build/
+backend/deployment_package.zip

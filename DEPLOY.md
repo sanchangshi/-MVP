@@ -1,125 +1,172 @@
-# Render 部署指南
+# 华为云 + GitHub Pages 部署指南
 
-本项目已配置好 Render 部署所需的文件，按照以下步骤即可完成部署。
+本项目使用华为云 FunctionGraph 部署后端，GitHub Pages 部署前端。
 
-## 📋 部署前准备
+## 📋 部署架构
 
-1. 确保项目代码已推送到 GitHub
-2. 注册 [Render 账号](https://dashboard.render.com/register)（可用 GitHub 登录）
+```
+用户 → GitHub Pages (前端) → 华为云 FunctionGraph (后端API)
+```
 
 ---
 
-## 🚀 部署步骤
+## 🚀 第一部分：部署后端到华为云
 
-### 第一步：推送代码到 GitHub
+### 步骤 1：构建部署包
+
+```bash
+cd backend
+python build_huawei.py
+```
+
+这会生成 `deployment_package.zip` 文件。
+
+### 步骤 2：创建函数
+
+1. 登录 [华为云控制台](https://console.huaweicloud.com/)
+2. 搜索 **FunctionGraph** → 进入函数工作流
+3. 点击 **创建函数**
+4. 选择 **HTTP函数**
+5. 填写基本信息：
+   - **函数名称**: `stock-backtest-api`
+   - **运行时**: Python 3.9
+   - **内存**: 512MB
+   - **超时时间**: 60秒
+6. 点击 **创建函数**
+
+### 步骤 3：上传代码
+
+1. 进入函数详情页
+2. 点击 **代码** 标签
+3. 选择 **上传代码包**
+4. 上传 `deployment_package.zip`
+5. 设置 **执行入口**: `huawei_handler.handler`
+6. 点击 **部署**
+
+### 步骤 4：配置环境变量
+
+1. 点击 **配置** 标签
+2. 找到 **环境变量**
+3. 添加：
+   - `TUSHARE_TOKEN`: 你的 Tushare Token
+4. 点击 **保存**
+
+### 步骤 5：配置 API 网关触发器
+
+1. 点击 **触发器** 标签
+2. 点击 **创建触发器**
+3. 选择 **API网关**
+4. 配置：
+   - **API名称**: `stock-backtest-api`
+   - **分组**: 创建新分组或选择已有
+   - **请求方式**: ANY
+   - **安全认证**: 无认证（或自定义认证）
+5. 点击 **确定**
+6. 复制生成的 **API地址**（类似 `https://xxx.apig.xxx.myhuaweicloud.com/`）
+
+### 步骤 6：配置 CORS
+
+在 API 网关控制台配置 CORS，允许 GitHub Pages 域名访问：
+
+1. 进入 API 网关控制台
+2. 找到你的 API 分组
+3. 配置跨域访问：
+   - **允许的来源**: `https://sanchangshi.github.io`
+   - **允许的方法**: GET, POST, OPTIONS
+   - **允许的头部**: Content-Type, Authorization
+
+---
+
+## 🌐 第二部分：部署前端到 GitHub Pages
+
+### 步骤 1：更新 API 地址
+
+编辑 `frontend/js/app.js`，更新 API 地址：
+
+```javascript
+const API_BASE = (() => {
+    // 生产环境：使用华为云 API 网关地址
+    if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+        return 'https://你的API网关地址.apig.xxx.myhuaweicloud.com';
+    }
+    // 本地开发环境
+    return 'http://localhost:5000';
+})();
+```
+
+### 步骤 2：推送代码
 
 ```bash
 git add .
-git commit -m "准备部署到 Render"
+git commit -m "配置华为云 API 地址"
 git push
 ```
 
-### 第二步：在 Render 创建后端服务
+### 步骤 3：启用 GitHub Pages
 
-1. 登录 [Render Dashboard](https://dashboard.render.com/)
-2. 点击 **New +** → **Web Service**
-3. 连接你的 GitHub 仓库
-4. 填写配置：
-   - **Name**: `stock-backtest-api`（或自定义）
-   - **Region**: `Singapore`（国内访问较稳定）
-   - **Branch**: `main`
-   - **Root Directory**: `backend`
-   - **Runtime**: `Python 3`
-   - **Build Command**: `pip install -r requirements.txt`
-   - **Start Command**: `gunicorn app:app --bind 0.0.0.0:$PORT --workers 2`
-   - **Plan**: `Free`
+1. 进入 GitHub 仓库
+2. 点击 **Settings** → **Pages**
+3. **Source** 选择 `Deploy from a branch`
+4. **Branch** 选择 `main`
+5. **目录** 选择 `/frontend`
+6. 点击 **Save**
 
-5. 添加环境变量：
-   - 点击 **Advanced** → **Add Environment Variable**
-   - Key: `TUSHARE_TOKEN`
-   - Value: `你的 Tushare Token`
+### 步骤 4：访问网站
 
-6. 点击 **Deploy Web Service**
-
-### 第三步：在 Render 创建前端服务
-
-1. 点击 **New +** → **Static Site**
-2. 连接同一个 GitHub 仓库
-3. 填写配置：
-   - **Name**: `stock-backtest-frontend`（或自定义）
-   - **Region**: `Singapore`
-   - **Branch**: `main`
-   - **Root Directory**: `frontend`
-   - **Build Command**: 留空（或填 `echo "No build needed"`）
-   - **Publish Directory**: `.`
-
-4. 点击 **Deploy Static Site**
-
-### 第四步：更新前端 API 地址
-
-部署完成后，需要更新 `frontend/js/app.js` 中的 API 地址：
-
-```javascript
-// 将这里的地址改为你的后端实际地址
-return 'https://stock-backtest-api.onrender.com';
+等待几分钟后，访问：
 ```
-
-然后重新推送代码，前端会自动重新部署。
+https://sanchangshi.github.io/-MVP/
+```
 
 ---
 
 ## ✅ 验证部署
 
-1. 访问后端健康检查：`https://你的后端地址.onrender.com/`
-   - 应返回：`{"status": "ok", "message": "股票回测系统API运行中"}`
+### 测试后端
 
-2. 访问前端地址：`https://你的前端地址.onrender.com/`
-   - 应正常显示页面
+```bash
+curl https://你的API网关地址/
+```
 
----
+应返回：
+```json
+{"status": "ok", "message": "股票回测系统API运行中"}
+```
 
-## ⚠️ 注意事项
+### 测试前端
 
-### 免费版限制
-
-| 限制项 | 说明 |
-|--------|------|
-| 休眠 | 15分钟无请求会休眠，首次访问需等待几秒 |
-| 带宽 | 每月 100GB |
-| 构建时间 | 每月 500 分钟 |
-| 服务数量 | 最多 1 个 Web Service + 1 个 Static Site |
-
-### IP 限制问题
-
-部署后所有用户共享服务器 IP，原有的 IP 限制逻辑可能需要调整：
-- 调优次数限制：所有用户共享配额
-- 扫描次数限制：所有用户共享配额
-
-建议改用浏览器指纹或用户账号系统来限制。
+访问 GitHub Pages 地址，检查页面是否正常显示。
 
 ---
 
-## 🔧 常见问题
+## ⚠️ 常见问题
 
-### 1. 后端启动失败
+### 1. 函数部署失败
 
-检查日志，常见原因：
-- 依赖安装失败：检查 `requirements.txt`
-- 环境变量未设置：确保 `TUSHARE_TOKEN` 已配置
+- 检查代码包大小（不超过 50MB）
+- 检查 `requirements.txt` 依赖是否正确
+- 查看函数日志排查错误
 
-### 2. 前端无法连接后端
+### 2. API 调用超时
 
-- 检查后端是否正常运行
-- 检查 CORS 配置（已在 `app.py` 中配置）
-- 检查前端 API 地址是否正确
+- 增加函数超时时间
+- 检查 Tushare API 响应时间
 
-### 3. 数据获取失败
+### 3. CORS 错误
 
-- 检查 Tushare Token 是否有效
-- 检查 Tushare API 配额是否用完
+- 确认 API 网关已配置 CORS
+- 检查允许的来源域名是否正确
+
+### 4. 前端无法连接后端
+
+- 检查 API 地址是否正确
+- 检查 API 网关是否正常工作
+- 检查浏览器控制台错误信息
 
 ---
 
 ## 📞 技术支持
 
-如有问题，请查看 Render 日志或提交 GitHub Issue。
+如有问题，请查看：
+- [华为云 FunctionGraph 文档](https://support.huaweicloud.com/functiongraph/index.html)
+- [GitHub Pages 文档](https://docs.github.com/zh/pages)
