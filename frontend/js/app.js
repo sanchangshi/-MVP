@@ -4,12 +4,12 @@
 
 // API 基础地址（自动判断环境）
 const API_BASE = (() => {
-    // 生产环境：使用 Render 后端地址
+    // 生产环境：使用 Zeabur 后端地址
     if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-        return 'https://stock-backtest-api.onrender.com';
+        return 'https://stockmpv1.zeabur.app';
     }
     // 本地开发环境
-    return 'http://192.168.3.4:5000';
+    return 'http://localhost:5000';
 })();
 
 // 生成浏览器指纹
