@@ -1,5 +1,5 @@
 # Fly.io 配置文件
-app = "stock-backtest-api"
+app = "stock-backtest-api-sanch"
 primary_region = "sin"
 
 [build]
