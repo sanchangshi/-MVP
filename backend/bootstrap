@@ -1,8 +1,0 @@
-#!/bin/bash
-# 阿里云函数计算 Custom Runtime 启动脚本
-
-# 设置 Python 路径
-export PYTHONPATH=/code
-
-# 启动 Flask 应用
-python -u index.py

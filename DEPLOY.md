@@ -14,20 +14,9 @@
 ### 第一步：推送代码到 GitHub
 
 ```bash
-# 初始化 Git（如果还没有）
-git init
-
-# 添加所有文件
 git add .
-
-# 提交
 git commit -m "准备部署到 Render"
-
-# 添加远程仓库（替换为你的仓库地址）
-git remote add origin https://github.com/你的用户名/你的仓库名.git
-
-# 推送
-git push -u origin main
+git push
 ```
 
 ### 第二步：在 Render 创建后端服务
