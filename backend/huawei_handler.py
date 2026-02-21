@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 华为云 FunctionGraph HTTP函数入口
+注意：HTTP函数入口文件名必须是 index.py，函数名是 handler
 """
 import json
 import os
@@ -88,18 +89,3 @@ def handler(event, context):
     }
     
     return response
-
-
-# 本地测试
-if __name__ == '__main__':
-    # 测试健康检查
-    test_event = {
-        'httpMethod': 'GET',
-        'path': '/',
-        'headers': {},
-        'queryStringParameters': {},
-        'body': ''
-    }
-    result = handler(test_event, None)
-    print(f"Status: {result['statusCode']}")
-    print(f"Body: {result['body']}")

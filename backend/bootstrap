@@ -1,0 +1,9 @@
+#!/bin/bash
+# 华为�?FunctionGraph HTTP函数启动脚本
+
+# 设置 Python 路径
+export PYTHONPATH=/opt/function/code
+
+# 启动应用
+cd /opt/function/code
+exec python index.py
