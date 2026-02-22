@@ -873,53 +873,69 @@ def stock_scan_stream():
             # 扫描每只股票的信号
             scan_results = []
             scanned_count = 0
+            last_heartbeat = datetime.now()
             
             for stock_code, stock_data in cached_data.items():
-                df = stock_data['df']
-                stock_name = stock_data['name']
-                scanned_count += 1
-                
-                # 发送扫描进度
-                percent = int(scanned_count / actual_stocks * 100)
-                yield f"data: {json.dumps({'type': 'scan_progress', 'message': f'扫描中: {stock_code} {stock_name}', 'current': scanned_count, 'total': actual_stocks, 'percent': percent}, ensure_ascii=False)}\n\n"
-                
-                # 检查每个策略是否有买入信号
-                buy_signals = []
-                
-                for strategy_config in strategies:
-                    strategy_type = strategy_config.get('type')
-                    params = strategy_config.get('params', {})
+                try:
+                    df = stock_data['df']
+                    stock_name = stock_data['name']
+                    scanned_count += 1
                     
-                    try:
-                        signal = check_buy_signal(df, strategy_type, params)
-                        if signal:
-                            buy_signals.append({
-                                'strategy': strategy_type,
-                                'signal': signal
-                            })
-                    except Exception as e:
-                        print(f"检查 {stock_code} {strategy_type} 信号失败: {e}")
-                        continue
-                
-                # 如果有买入信号，发送实时结果
-                if buy_signals:
-                    latest_price = float(df.iloc[-1]['close'])
-                    latest_date = df.iloc[-1]['date']
-                    if isinstance(latest_date, pd.Timestamp):
-                        latest_date = latest_date.strftime('%Y-%m-%d')
+                    # 发送扫描进度
+                    percent = int(scanned_count / actual_stocks * 100)
+                    yield f"data: {json.dumps({'type': 'scan_progress', 'message': f'扫描中: {stock_code} {stock_name}', 'current': scanned_count, 'total': actual_stocks, 'percent': percent}, ensure_ascii=False)}\n\n"
                     
-                    result_item = {
-                        'code': stock_code,
-                        'name': stock_name,
-                        'price': latest_price,
-                        'date': latest_date,
-                        'signals': buy_signals,
-                        'signal_count': len(buy_signals)
-                    }
-                    scan_results.append(result_item)
+                    # 每10秒发送心跳，保持连接活跃
+                    now = datetime.now()
+                    if (now - last_heartbeat).total_seconds() > 10:
+                        yield f"data: {json.dumps({'type': 'heartbeat'}, ensure_ascii=False)}\n\n"
+                        last_heartbeat = now
                     
-                    # 发现实时信号
-                    yield f"data: {json.dumps({'type': 'signal_found', 'data': result_item}, ensure_ascii=False)}\n\n"
+                    # 检查每个策略是否有买入信号
+                    buy_signals = []
+                    
+                    for strategy_config in strategies:
+                        strategy_type = strategy_config.get('type')
+                        params = strategy_config.get('params', {})
+                        
+                        try:
+                            signal = check_buy_signal(df, strategy_type, params)
+                            if signal:
+                                buy_signals.append({
+                                    'strategy': strategy_type,
+                                    'signal': signal
+                                })
+                        except Exception as e:
+                            print(f"检查 {stock_code} {strategy_type} 信号失败: {e}")
+                            continue
+                    
+                    # 如果有买入信号，发送实时结果
+                    if buy_signals:
+                        try:
+                            latest_price = float(df.iloc[-1]['close'])
+                            latest_date = df.iloc[-1]['date']
+                            if isinstance(latest_date, pd.Timestamp):
+                                latest_date = latest_date.strftime('%Y-%m-%d')
+                            
+                            result_item = {
+                                'code': stock_code,
+                                'name': stock_name,
+                                'price': latest_price,
+                                'date': latest_date,
+                                'signals': buy_signals,
+                                'signal_count': len(buy_signals)
+                            }
+                            scan_results.append(result_item)
+                            
+                            # 发现实时信号
+                            yield f"data: {json.dumps({'type': 'signal_found', 'data': result_item}, ensure_ascii=False)}\n\n"
+                        except Exception as e:
+                            print(f"处理 {stock_code} 信号结果失败: {e}")
+                except Exception as e:
+                    print(f"扫描 {stock_code} 失败: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
             
             # 按信号数量排序
             scan_results.sort(key=lambda x: x['signal_count'], reverse=True)
@@ -1146,7 +1162,18 @@ def check_buy_signal(df, strategy_type, params):
     检查是否有买入信号
     返回: None 或 信号描述
     """
-    if len(df) < 30:
+    # 数据检查
+    if df is None or len(df) < 30:
+        return None
+    
+    # 检查必要列是否存在
+    required_cols = ['open', 'close', 'high', 'low', 'volume']
+    for col in required_cols:
+        if col not in df.columns:
+            return None
+    
+    # 检查是否有 NaN 值
+    if df[required_cols].isnull().any().any():
         return None
     
     # 获取参数值

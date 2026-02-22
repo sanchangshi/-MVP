@@ -2,6 +2,7 @@
 数据获取模块 - 使用tushare获取股票历史数据
 """
 import os
+import time
 import tushare as ts
 import pandas as pd
 from datetime import datetime, timedelta
@@ -14,10 +15,50 @@ pro = ts.pro_api()
 # 全局数据缓存
 _data_cache = {}
 
+# API 速率限制（每分钟最多50次）
+API_RATE_LIMIT = 50  # 每分钟最大请求数
+API_CALL_INTERVAL = 1.2  # 每次请求间隔（秒），60秒/50次=1.2秒
+_last_api_call_time = 0
+_api_call_count = 0
+_api_call_minute_start = time.time()
+
+
+def _wait_for_rate_limit():
+    """
+    等待以满足 API 速率限制
+    每分钟最多50次调用，每次调用间隔至少1.2秒
+    """
+    global _last_api_call_time, _api_call_count, _api_call_minute_start
+    
+    current_time = time.time()
+    
+    # 检查是否需要重置分钟计数器
+    if current_time - _api_call_minute_start >= 60:
+        _api_call_count = 0
+        _api_call_minute_start = current_time
+    
+    # 如果本分钟内调用次数达到限制，等待到下一分钟
+    if _api_call_count >= API_RATE_LIMIT - 1:  # 留一点余量
+        wait_time = 60 - (current_time - _api_call_minute_start) + 1
+        if wait_time > 0:
+            print(f"API 调用达到限制，等待 {wait_time:.1f} 秒...")
+            time.sleep(wait_time)
+            _api_call_count = 0
+            _api_call_minute_start = time.time()
+    
+    # 确保每次调用间隔至少 API_CALL_INTERVAL 秒
+    time_since_last_call = current_time - _last_api_call_time
+    if time_since_last_call < API_CALL_INTERVAL:
+        sleep_time = API_CALL_INTERVAL - time_since_last_call
+        time.sleep(sleep_time)
+    
+    _last_api_call_time = time.time()
+    _api_call_count += 1
+
 
 def get_stock_data(symbol: str, start_date: str = None, end_date: str = None, years: int = None) -> pd.DataFrame:
     """
-    获取股票历史数据（带缓存）
+    获取股票历史数据（带缓存和速率限制）
     
     Args:
         symbol: 股票代码，如 '000001' 或 'sh000001'
@@ -59,6 +100,9 @@ def get_stock_data(symbol: str, start_date: str = None, end_date: str = None, ye
         if cache_key in _data_cache:
             print(f"使用缓存数据: {code}, 开始日期: {start_date}, 结束日期: {end_date}")
             return _data_cache[cache_key].copy()
+        
+        # 等待以满足 API 速率限制
+        _wait_for_rate_limit()
         
         print(f"获取数据: {ts_code}, 开始日期: {start_date}, 结束日期: {end_date}")
         
