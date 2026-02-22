@@ -4,6 +4,7 @@ Flask API 主应用
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import pandas as pd
+import threading
 
 from data_fetcher import get_stock_data, get_stock_list, get_stock_pools
 from backtest import BacktestEngine
@@ -32,6 +33,12 @@ last_reset_date = None  # 记录上次重置日期
 stock_pool_data_cache = {}
 CACHE_EXPIRE_HOURS = 4  # 缓存过期时间（小时）
 MAX_CACHE_SIZE = 10  # 最大缓存条目数
+
+# 线程锁 - 保护并发访问
+optimize_lock = threading.Lock()
+scan_lock = threading.Lock()
+cache_lock = threading.Lock()
+date_reset_lock = threading.Lock()
 
 
 @app.route('/api/stock_pools', methods=['GET'])
@@ -199,16 +206,17 @@ def optimize():
         # 获取浏览器指纹（从前端传递）
         fingerprint = data.get('fingerprint', 'unknown')
         
-        # 检查调优次数限制
-        current_count = optimize_count_by_fingerprint.get(fingerprint, 0)
-        if current_count >= FREE_OPTIMIZE_LIMIT:
-            return jsonify({
-                'success': False,
-                'error': f'您的免费调优次数已用完（{current_count}/{FREE_OPTIMIZE_LIMIT}次），请升级VIP继续使用',
-                'limit_exceeded': True,
-                'current_count': current_count,
-                'limit': FREE_OPTIMIZE_LIMIT
-            }), 403
+        # 检查调优次数限制（加锁）
+        with optimize_lock:
+            current_count = optimize_count_by_fingerprint.get(fingerprint, 0)
+            if current_count >= FREE_OPTIMIZE_LIMIT:
+                return jsonify({
+                    'success': False,
+                    'error': f'您的免费调优次数已用完（{current_count}/{FREE_OPTIMIZE_LIMIT}次），请升级VIP继续使用',
+                    'limit_exceeded': True,
+                    'current_count': current_count,
+                    'limit': FREE_OPTIMIZE_LIMIT
+                }), 403
         
         symbol = data.get('symbol', '000001')
         strategy_type = data.get('strategy_type')  # 'ma' 或 'macd'
@@ -244,9 +252,10 @@ def optimize():
                 'error': '不支持的策略类型'
             }), 400
         
-        # 调优成功，增加该指纹的计数
-        optimize_count_by_fingerprint[fingerprint] = current_count + 1
-        remaining_count = FREE_OPTIMIZE_LIMIT - optimize_count_by_fingerprint[fingerprint]
+        # 调优成功，增加该指纹的计数（加锁）
+        with optimize_lock:
+            optimize_count_by_fingerprint[fingerprint] = current_count + 1
+            remaining_count = FREE_OPTIMIZE_LIMIT - optimize_count_by_fingerprint[fingerprint]
         
         return jsonify({
             'success': True,
@@ -768,14 +777,16 @@ def stock_scan_stream():
     data = request.get_json()
     fingerprint = data.get('fingerprint', 'unknown')
     
-    # 检查是否需要重置每日计数
+    # 检查是否需要重置每日计数（加锁）
     today = datetime.now().strftime('%Y-%m-%d')
-    if last_reset_date != today:
-        stock_scan_count_by_fingerprint = {}
-        last_reset_date = today
+    with date_reset_lock:
+        if last_reset_date != today:
+            stock_scan_count_by_fingerprint = {}
+            last_reset_date = today
     
-    # 检查扫描次数限制
-    current_count = stock_scan_count_by_fingerprint.get(fingerprint, 0)
+    # 检查扫描次数限制（加锁）
+    with scan_lock:
+        current_count = stock_scan_count_by_fingerprint.get(fingerprint, 0)
     
     def generate():
         try:
@@ -803,22 +814,24 @@ def stock_scan_stream():
             stocks = get_stock_list(pool)
             total_stocks = len(stocks)
             
-            # 清理过期缓存
-            clean_expired_cache()
+            # 清理过期缓存（加锁）
+            with cache_lock:
+                clean_expired_cache()
             
-            # 检查缓存
+            # 检查缓存（加锁）
             cache_key = f"{pool}_{start_date}_{end_date}"
-            if cache_key in stock_pool_data_cache:
-                cache_entry = stock_pool_data_cache[cache_key]
-                if is_cache_valid(cache_entry):
-                    print(f"使用缓存数据: {cache_key}")
-                    cached_data = cache_entry['data']
+            with cache_lock:
+                if cache_key in stock_pool_data_cache:
+                    cache_entry = stock_pool_data_cache[cache_key]
+                    if is_cache_valid(cache_entry):
+                        print(f"使用缓存数据: {cache_key}")
+                        cached_data = cache_entry['data']
+                    else:
+                        print(f"缓存已过期: {cache_key}")
+                        del stock_pool_data_cache[cache_key]
+                        cached_data = None
                 else:
-                    print(f"缓存已过期: {cache_key}")
-                    del stock_pool_data_cache[cache_key]
                     cached_data = None
-            else:
-                cached_data = None
             
             if cached_data is None:
                 yield f"data: {json.dumps({'type': 'progress', 'message': '正在批量获取股票数据...', 'current': 0, 'total': total_stocks, 'percent': 0}, ensure_ascii=False)}\n\n"
@@ -840,17 +853,18 @@ def stock_scan_stream():
                     stock_msg = f'获取数据中: {stock["code"]} {stock["name"]}'
                     yield f"data: {json.dumps({'type': 'fetch_progress', 'message': stock_msg, 'current': i + 1, 'total': total_stocks, 'percent': percent}, ensure_ascii=False)}\n\n"
                 
-                # 检查缓存大小，如果超过限制则删除最旧的
-                if len(stock_pool_data_cache) >= MAX_CACHE_SIZE:
-                    oldest_key = next(iter(stock_pool_data_cache))
-                    del stock_pool_data_cache[oldest_key]
-                    print(f"缓存已满，删除最旧条目: {oldest_key}")
-                
-                # 存入缓存（带时间戳）
-                stock_pool_data_cache[cache_key] = {
-                    'data': cached_data,
-                    'timestamp': datetime.now()
-                }
+                # 存入缓存（加锁）
+                with cache_lock:
+                    # 检查缓存大小，如果超过限制则删除最旧的
+                    if len(stock_pool_data_cache) >= MAX_CACHE_SIZE:
+                        oldest_key = next(iter(stock_pool_data_cache))
+                        del stock_pool_data_cache[oldest_key]
+                        print(f"缓存已满，删除最旧条目: {oldest_key}")
+                    
+                    stock_pool_data_cache[cache_key] = {
+                        'data': cached_data,
+                        'timestamp': datetime.now()
+                    }
             
             # 发送扫描开始信号
             actual_stocks = len(cached_data)
@@ -910,9 +924,10 @@ def stock_scan_stream():
             # 按信号数量排序
             scan_results.sort(key=lambda x: x['signal_count'], reverse=True)
             
-            # 增加计数
-            stock_scan_count_by_fingerprint[fingerprint] = current_count + 1
-            remaining_count = FREE_STOCK_SCAN_LIMIT - stock_scan_count_by_fingerprint[fingerprint]
+            # 增加计数（加锁）
+            with scan_lock:
+                stock_scan_count_by_fingerprint[fingerprint] = current_count + 1
+                remaining_count = FREE_STOCK_SCAN_LIMIT - stock_scan_count_by_fingerprint[fingerprint]
             
             # 发送完成信号
             yield f"data: {json.dumps({'type': 'complete', 'data': {'results': scan_results, 'total_stocks': actual_stocks, 'signal_stocks': len(scan_results), 'remaining_count': remaining_count}}, ensure_ascii=False)}\n\n"
