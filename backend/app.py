@@ -6,7 +6,7 @@ from flask_cors import CORS
 import pandas as pd
 import threading
 
-from data_fetcher import get_stock_data, get_stock_list, get_stock_pools
+from data_fetcher import get_stock_data, get_stock_list, get_stock_pools, batch_get_stock_data
 from backtest import BacktestEngine
 from strategies.ma_strategy import MAStrategy
 from strategies.macd_strategy import MACDStrategy
@@ -834,24 +834,43 @@ def stock_scan_stream():
                     cached_data = None
             
             if cached_data is None:
-                yield f"data: {json.dumps({'type': 'progress', 'message': '正在批量获取股票数据...', 'current': 0, 'total': total_stocks, 'percent': 0}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'progress', 'message': '正在并行获取股票数据（加速模式）...', 'current': 0, 'total': total_stocks, 'percent': 0}, ensure_ascii=False)}\n\n"
                 
-                print(f"批量获取股票数据: {cache_key}")
+                print(f"并行批量获取股票数据: {cache_key}")
+                
+                # 使用并行获取（5个线程同时获取）
+                import concurrent.futures
+                
                 cached_data = {}
-                for i, stock in enumerate(stocks):
-                    try:
-                        df = get_stock_data(stock['code'], start_date=start_date, end_date=end_date)
-                        cached_data[stock['code']] = {
-                            'df': df,
-                            'name': stock['name']
-                        }
-                    except Exception as e:
-                        print(f"获取 {stock['code']} 数据失败: {e}")
+                completed = 0
+                
+                # 使用线程池并行获取
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    # 提交所有任务
+                    future_to_stock = {
+                        executor.submit(get_stock_data, stock['code'], start_date, end_date): stock 
+                        for stock in stocks
+                    }
                     
-                    # 发送数据获取进度
-                    percent = int((i + 1) / total_stocks * 100)
-                    stock_msg = f'获取数据中: {stock["code"]} {stock["name"]}'
-                    yield f"data: {json.dumps({'type': 'fetch_progress', 'message': stock_msg, 'current': i + 1, 'total': total_stocks, 'percent': percent}, ensure_ascii=False)}\n\n"
+                    # 处理完成的任务
+                    for future in concurrent.futures.as_completed(future_to_stock):
+                        stock = future_to_stock[future]
+                        completed += 1
+                        
+                        try:
+                            df = future.result()
+                            if df is not None and len(df) > 0:
+                                cached_data[stock['code']] = {
+                                    'df': df,
+                                    'name': stock['name']
+                                }
+                        except Exception as e:
+                            print(f"获取 {stock['code']} 数据失败: {e}")
+                        
+                        # 发送数据获取进度
+                        percent = int(completed / total_stocks * 100)
+                        stock_msg = f'获取数据中: {stock["code"]} {stock["name"]} ({completed}/{total_stocks})'
+                        yield f"data: {json.dumps({'type': 'fetch_progress', 'message': stock_msg, 'current': completed, 'total': total_stocks, 'percent': percent}, ensure_ascii=False)}\n\n"
                 
                 # 存入缓存（加锁）
                 with cache_lock:
@@ -865,6 +884,8 @@ def stock_scan_stream():
                         'data': cached_data,
                         'timestamp': datetime.now()
                     }
+                
+                print(f"数据获取完成，成功获取 {len(cached_data)}/{total_stocks} 只股票")
             
             # 发送扫描开始信号
             actual_stocks = len(cached_data)

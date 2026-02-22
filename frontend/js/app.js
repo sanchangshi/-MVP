@@ -4,12 +4,15 @@
 
 // API 基础地址（自动判断环境）
 const API_BASE = (() => {
-    // 生产环境：使用 Zeabur 后端地址
-    if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-        return 'https://stockmpv1.zeabur.app';
+    // 本地开发环境：localhost、127.0.0.1 或 file:// 协议
+    if (window.location.hostname === 'localhost' || 
+        window.location.hostname === '127.0.0.1' ||
+        window.location.hostname === '' ||
+        window.location.protocol === 'file:') {
+        return 'http://localhost:5000';
     }
-    // 本地开发环境
-    return 'http://localhost:5000';
+    // 生产环境：使用 Zeabur 后端地址
+    return 'https://stockmpv1.zeabur.app';
 })();
 
 // 生成浏览器指纹
@@ -925,7 +928,7 @@ function updateScanCountDisplay(remaining) {
 }
 
 /**
- * 运行策略信号扫描 - 使用 SSE 流式进度
+ * 运行策略信号扫描 - 使用 SSE 流式进度（带重试机制）
  */
 async function runStockScan() {
     if (state.selectedStrategies.length === 0) {
@@ -962,97 +965,147 @@ async function runStockScan() {
     // 存储扫描结果
     let scanResults = [];
     
-    try {
-        // 使用 fetch 发送 POST 请求，然后处理 SSE 流
-        const response = await fetch(`${API_BASE}/api/stock_scan_stream`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                pool,
-                strategies,
-                fingerprint: BROWSER_FINGERPRINT
-            })
-        });
-        
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+    // 重试配置
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY = 2000; // 2秒
+    let retryCount = 0;
+    
+    async function attemptScan() {
+        try {
+            // 使用 fetch 发送 POST 请求，然后处理 SSE 流
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => {
+                controller.abort();
+            }, 300000); // 5分钟超时
             
-            // 解码数据并添加到缓冲区
-            buffer += decoder.decode(value, { stream: true });
+            const response = await fetch(`${API_BASE}/api/stock_scan_stream`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    pool,
+                    strategies,
+                    fingerprint: BROWSER_FINGERPRINT
+                }),
+                signal: controller.signal
+            });
             
-            // 解析 SSE 消息
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || ''; // 保留不完整的行
+            clearTimeout(timeoutId);
             
-            for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                    try {
-                        const jsonStr = line.substring(6);
-                        const event = JSON.parse(jsonStr);
-                        
-                        switch (event.type) {
-                            case 'start':
-                                scanProgressText.textContent = event.message;
-                                break;
-                                
-                            case 'fetch_progress':
-                                scanProgressText.textContent = '获取股票数据...';
-                                scanProgressPercent.textContent = `${event.percent}%`;
-                                scanProgressBar.style.width = `${event.percent}%`;
-                                scanProgressDetail.textContent = event.message;
-                                break;
-                                
-                            case 'scan_start':
-                                scanProgressText.textContent = event.message;
-                                scanProgressPercent.textContent = '0%';
-                                scanProgressBar.style.width = '0%';
-                                scanProgressDetail.textContent = '';
-                                break;
-                                
-                            case 'scan_progress':
-                                scanProgressPercent.textContent = `${event.percent}%`;
-                                scanProgressBar.style.width = `${event.percent}%`;
-                                scanProgressDetail.textContent = event.message;
-                                break;
-                                
-                            case 'signal_found':
-                                // 实时添加发现的信号
-                                scanResults.push(event.data);
-                                // 更新结果预览
-                                updateScanResultPreview(scanResults);
-                                break;
-                                
-                            case 'complete':
-                                // 扫描完成
-                                scanProgress.style.display = 'none';
-                                updateScanCountDisplay(event.data.remaining_count);
-                                renderScanResult(event.data);
-                                scanResults = []; // 重置
-                                break;
-                                
-                            case 'error':
-                                scanProgress.style.display = 'none';
-                                if (event.limit_exceeded) {
-                                    updateScanCountDisplay(0);
-                                }
-                                alert('扫描失败: ' + event.error);
-                                break;
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let lastProgressTime = Date.now();
+            
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                // 解码数据并添加到缓冲区
+                buffer += decoder.decode(value, { stream: true });
+                lastProgressTime = Date.now();
+                
+                // 解析 SSE 消息
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || ''; // 保留不完整的行
+                
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const jsonStr = line.substring(6);
+                            const event = JSON.parse(jsonStr);
+                            
+                            switch (event.type) {
+                                case 'start':
+                                    scanProgressText.textContent = event.message;
+                                    break;
+                                    
+                                case 'fetch_progress':
+                                    scanProgressText.textContent = '获取股票数据（加速模式）...';
+                                    scanProgressPercent.textContent = `${event.percent}%`;
+                                    scanProgressBar.style.width = `${event.percent}%`;
+                                    scanProgressDetail.textContent = event.message;
+                                    break;
+                                    
+                                case 'scan_start':
+                                    scanProgressText.textContent = event.message;
+                                    scanProgressPercent.textContent = '0%';
+                                    scanProgressBar.style.width = '0%';
+                                    scanProgressDetail.textContent = '';
+                                    break;
+                                    
+                                case 'scan_progress':
+                                    scanProgressPercent.textContent = `${event.percent}%`;
+                                    scanProgressBar.style.width = `${event.percent}%`;
+                                    scanProgressDetail.textContent = event.message;
+                                    break;
+                                    
+                                case 'heartbeat':
+                                    // 心跳包，保持连接活跃
+                                    console.log('收到心跳包');
+                                    break;
+                                    
+                                case 'signal_found':
+                                    // 实时添加发现的信号
+                                    scanResults.push(event.data);
+                                    // 更新结果预览
+                                    updateScanResultPreview(scanResults);
+                                    break;
+                                    
+                                case 'complete':
+                                    // 扫描完成
+                                    scanProgress.style.display = 'none';
+                                    updateScanCountDisplay(event.data.remaining_count);
+                                    renderScanResult(event.data);
+                                    scanResults = []; // 重置
+                                    return; // 成功完成，退出函数
+                                    
+                                case 'error':
+                                    scanProgress.style.display = 'none';
+                                    if (event.limit_exceeded) {
+                                        updateScanCountDisplay(0);
+                                        alert('扫描失败: ' + event.error);
+                                        return;
+                                    }
+                                    throw new Error(event.error);
+                            }
+                        } catch (e) {
+                            if (e.message && e.message.includes('limit_exceeded')) {
+                                throw e;
+                            }
+                            console.error('解析 SSE 消息失败:', e, line);
                         }
-                    } catch (e) {
-                        console.error('解析 SSE 消息失败:', e, line);
                     }
                 }
             }
+        } catch (error) {
+            console.error('扫描失败:', error);
+            
+            // 检查是否可以重试
+            if (retryCount < MAX_RETRIES && error.name !== 'AbortError') {
+                retryCount++;
+                scanProgressText.textContent = `连接中断，正在重试 (${retryCount}/${MAX_RETRIES})...`;
+                scanProgressDetail.textContent = `错误: ${error.message}`;
+                
+                // 等待后重试
+                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+                return attemptScan();
+            } else {
+                scanProgress.style.display = 'none';
+                if (error.name === 'AbortError') {
+                    alert('扫描超时，请稍后重试。数据量较大时可能需要更长时间。');
+                } else {
+                    alert('扫描失败: ' + (error.message || '请检查网络连接'));
+                }
+            }
         }
-    } catch (error) {
-        console.error('扫描失败:', error);
-        scanProgress.style.display = 'none';
-        alert('扫描失败，请检查网络连接');
+    }
+    
+    try {
+        await attemptScan();
     } finally {
         elements.stockScanBtn.disabled = false;
     }

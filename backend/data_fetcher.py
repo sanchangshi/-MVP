@@ -1,59 +1,114 @@
 """
 数据获取模块 - 使用tushare获取股票历史数据
+优化版本：支持并行获取、按股票单独缓存、更好的错误处理
 """
 import os
 import time
 import tushare as ts
 import pandas as pd
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 # 设置tushare token（优先从环境变量读取）
 TUSHARE_TOKEN = os.environ.get('TUSHARE_TOKEN', '289d3549685548f739cb8865e55b79c9fb7f8c5af173e4c5178786a4')
 ts.set_token(TUSHARE_TOKEN)
 pro = ts.pro_api()
 
-# 全局数据缓存
-_data_cache = {}
+# 全局数据缓存 - 按股票代码单独缓存
+_stock_cache = {}  # {stock_code: {start_date: ..., end_date: ..., data: ..., timestamp: ...}}
+_cache_lock = threading.Lock()
+CACHE_EXPIRE_HOURS = 4  # 缓存过期时间
 
-# API 速率限制（每分钟最多50次）
-API_RATE_LIMIT = 50  # 每分钟最大请求数
-API_CALL_INTERVAL = 1.2  # 每次请求间隔（秒），60秒/50次=1.2秒
+# API 速率限制（每分钟最多200次，tushare pro 限制）
+API_RATE_LIMIT = 180  # 每分钟最大请求数（留余量）
+API_CALL_INTERVAL = 0.3  # 每次请求间隔（秒）
 _last_api_call_time = 0
 _api_call_count = 0
 _api_call_minute_start = time.time()
+_rate_limit_lock = threading.Lock()
 
 
 def _wait_for_rate_limit():
     """
-    等待以满足 API 速率限制
-    每分钟最多50次调用，每次调用间隔至少1.2秒
+    等待以满足 API 速率限制（线程安全）
     """
     global _last_api_call_time, _api_call_count, _api_call_minute_start
     
-    current_time = time.time()
-    
-    # 检查是否需要重置分钟计数器
-    if current_time - _api_call_minute_start >= 60:
-        _api_call_count = 0
-        _api_call_minute_start = current_time
-    
-    # 如果本分钟内调用次数达到限制，等待到下一分钟
-    if _api_call_count >= API_RATE_LIMIT - 1:  # 留一点余量
-        wait_time = 60 - (current_time - _api_call_minute_start) + 1
-        if wait_time > 0:
-            print(f"API 调用达到限制，等待 {wait_time:.1f} 秒...")
-            time.sleep(wait_time)
+    with _rate_limit_lock:
+        current_time = time.time()
+        
+        # 检查是否需要重置分钟计数器
+        if current_time - _api_call_minute_start >= 60:
             _api_call_count = 0
-            _api_call_minute_start = time.time()
+            _api_call_minute_start = current_time
+        
+        # 如果本分钟内调用次数达到限制，等待到下一分钟
+        if _api_call_count >= API_RATE_LIMIT - 1:
+            wait_time = 60 - (current_time - _api_call_minute_start) + 1
+            if wait_time > 0:
+                print(f"API 调用达到限制，等待 {wait_time:.1f} 秒...")
+                time.sleep(wait_time)
+                _api_call_count = 0
+                _api_call_minute_start = time.time()
+        
+        # 确保每次调用间隔至少 API_CALL_INTERVAL 秒
+        time_since_last_call = current_time - _last_api_call_time
+        if time_since_last_call < API_CALL_INTERVAL:
+            sleep_time = API_CALL_INTERVAL - time_since_last_call
+            time.sleep(sleep_time)
+        
+        _last_api_call_time = time.time()
+        _api_call_count += 1
+
+
+def _is_cache_valid(cache_entry: dict) -> bool:
+    """
+    检查缓存是否有效
+    """
+    if not isinstance(cache_entry, dict) or 'timestamp' not in cache_entry:
+        return False
     
-    # 确保每次调用间隔至少 API_CALL_INTERVAL 秒
-    time_since_last_call = current_time - _last_api_call_time
-    if time_since_last_call < API_CALL_INTERVAL:
-        sleep_time = API_CALL_INTERVAL - time_since_last_call
-        time.sleep(sleep_time)
+    timestamp = cache_entry.get('timestamp')
+    if not timestamp:
+        return False
     
-    _last_api_call_time = time.time()
-    _api_call_count += 1
+    return (datetime.now() - timestamp) <= timedelta(hours=CACHE_EXPIRE_HOURS)
+
+
+def _get_from_cache(code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    从缓存获取数据
+    """
+    with _cache_lock:
+        if code in _stock_cache:
+            entry = _stock_cache[code]
+            if _is_cache_valid(entry):
+                # 检查日期范围是否覆盖
+                cached_start = entry.get('start_date', '')
+                cached_end = entry.get('end_date', '')
+                if cached_start <= start_date and cached_end >= end_date:
+                    # 过滤日期范围
+                    df = entry['data'].copy()
+                    df = df[(df['date'] >= pd.to_datetime(start_date)) & 
+                            (df['date'] <= pd.to_datetime(end_date))]
+                    print(f"使用缓存数据: {code}")
+                    return df
+    return None
+
+
+def _save_to_cache(code: str, start_date: str, end_date: str, df: pd.DataFrame):
+    """
+    保存数据到缓存
+    """
+    with _cache_lock:
+        _stock_cache[code] = {
+            'start_date': start_date,
+            'end_date': end_date,
+            'data': df.copy(),
+            'timestamp': datetime.now()
+        }
+        print(f"数据已缓存: {code}")
 
 
 def get_stock_data(symbol: str, start_date: str = None, end_date: str = None, years: int = None) -> pd.DataFrame:
@@ -69,8 +124,6 @@ def get_stock_data(symbol: str, start_date: str = None, end_date: str = None, ye
     Returns:
         DataFrame: 包含日期、开盘价、最高价、最低价、收盘价、成交量等
     """
-    global _data_cache
-    
     try:
         # 处理股票代码格式 - tushare使用 000001.SZ 格式
         if symbol.startswith('sh') or symbol.startswith('sz'):
@@ -96,10 +149,9 @@ def get_stock_data(symbol: str, start_date: str = None, end_date: str = None, ye
             start_date = (datetime.now() - timedelta(days=2 * 365)).strftime('%Y%m%d')
         
         # 检查缓存
-        cache_key = f"{code}_{start_date}_{end_date}"
-        if cache_key in _data_cache:
-            print(f"使用缓存数据: {code}, 开始日期: {start_date}, 结束日期: {end_date}")
-            return _data_cache[cache_key].copy()
+        cached_df = _get_from_cache(code, start_date, end_date)
+        if cached_df is not None:
+            return cached_df
         
         # 等待以满足 API 速率限制
         _wait_for_rate_limit()
@@ -132,14 +184,65 @@ def get_stock_data(symbol: str, start_date: str = None, end_date: str = None, ye
         df = df[columns_needed]
         
         # 存入缓存
-        _data_cache[cache_key] = df.copy()
-        print(f"数据已缓存: {cache_key}")
+        _save_to_cache(code, start_date, end_date, df)
         
         return df
         
     except Exception as e:
         print(f"获取股票数据失败: {e}")
         raise
+
+
+def get_single_stock_data_for_batch(args: tuple) -> dict:
+    """
+    批量获取时的单只股票数据获取函数（用于并行调用）
+    
+    Args:
+        args: (stock_code, stock_name, start_date, end_date) 元组
+    
+    Returns:
+        dict: {'code': ..., 'name': ..., 'data': DataFrame, 'error': ...}
+    """
+    stock_code, stock_name, start_date, end_date = args
+    try:
+        df = get_stock_data(stock_code, start_date=start_date, end_date=end_date)
+        return {'code': stock_code, 'name': stock_name, 'data': df, 'error': None}
+    except Exception as e:
+        print(f"获取 {stock_code} 数据失败: {e}")
+        return {'code': stock_code, 'name': stock_name, 'data': None, 'error': str(e)}
+
+
+def batch_get_stock_data(stock_list: list, start_date: str, end_date: str, max_workers: int = 5) -> dict:
+    """
+    并行获取多只股票数据
+    
+    Args:
+        stock_list: 股票列表，格式 [{'code': '000001', 'name': '平安银行'}, ...]
+        start_date: 开始日期，格式 'YYYYMMDD'
+        end_date: 结束日期，格式 'YYYYMMDD'
+        max_workers: 最大并行数（建议不超过10，避免触发API限制）
+    
+    Returns:
+        dict: {stock_code: {'data': DataFrame, 'name': ...}, ...}
+    """
+    results = {}
+    
+    # 准备参数
+    args_list = [(stock['code'], stock['name'], start_date, end_date) for stock in stock_list]
+    
+    # 使用线程池并行获取
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(get_single_stock_data_for_batch, args): args[0] for args in args_list}
+        
+        for future in as_completed(futures):
+            result = future.result()
+            if result['data'] is not None:
+                results[result['code']] = {
+                    'data': result['data'],
+                    'name': result['name']
+                }
+    
+    return results
 
 
 # 中证A50成分股（50只）
