@@ -984,32 +984,32 @@ def stock_scan():
     扫描股票池，找出当前有买入信号的股票
     自动获取最近160天数据（覆盖所有策略调优需求）
     """
-    global last_reset_date, stock_scan_count_by_ip
+    global last_reset_date, stock_scan_count_by_fingerprint
     
     try:
         from datetime import datetime, timedelta
         
         # 检查是否需要重置每日计数
         today = datetime.now().strftime('%Y-%m-%d')
-        if last_reset_date != today:
-            stock_scan_count_by_ip = {}
-            last_reset_date = today
-        
-        # 获取用户 IP 地址
-        user_ip = request.remote_addr
-        
-        # 检查扫描次数限制
-        current_count = stock_scan_count_by_ip.get(user_ip, 0)
-        if current_count >= FREE_STOCK_SCAN_LIMIT:
-            return jsonify({
-                'success': False,
-                'error': f'您今天的扫描次数已用完（{current_count}/{FREE_STOCK_SCAN_LIMIT}次），请明天再试或升级VIP',
-                'limit_exceeded': True,
-                'current_count': current_count,
-                'limit': FREE_STOCK_SCAN_LIMIT
-            }), 403
+        with date_reset_lock:
+            if last_reset_date != today:
+                stock_scan_count_by_fingerprint = {}
+                last_reset_date = today
         
         data = request.get_json()
+        fingerprint = data.get('fingerprint', 'unknown')
+        
+        # 检查扫描次数限制
+        with scan_lock:
+            current_count = stock_scan_count_by_fingerprint.get(fingerprint, 0)
+            if current_count >= FREE_STOCK_SCAN_LIMIT:
+                return jsonify({
+                    'success': False,
+                    'error': f'您今天的扫描次数已用完（{current_count}/{FREE_STOCK_SCAN_LIMIT}次），请明天再试或升级VIP',
+                    'limit_exceeded': True,
+                    'current_count': current_count,
+                    'limit': FREE_STOCK_SCAN_LIMIT
+                }), 403
         
         pool = data.get('pool', 'hot')  # 股票池
         strategies = data.get('strategies', [])  # 策略配置列表
@@ -1028,22 +1028,24 @@ def stock_scan():
         stocks = get_stock_list(pool)
         
         # 清理过期缓存
-        clean_expired_cache()
+        with cache_lock:
+            clean_expired_cache()
         
         # 检查缓存
         cache_key = f"{pool}_{start_date}_{end_date}"
-        if cache_key in stock_pool_data_cache:
-            cache_entry = stock_pool_data_cache[cache_key]
-            # 检查缓存是否过期
-            if is_cache_valid(cache_entry):
-                print(f"使用缓存数据: {cache_key}")
-                cached_data = cache_entry['data']
+        with cache_lock:
+            if cache_key in stock_pool_data_cache:
+                cache_entry = stock_pool_data_cache[cache_key]
+                # 检查缓存是否过期
+                if is_cache_valid(cache_entry):
+                    print(f"使用缓存数据: {cache_key}")
+                    cached_data = cache_entry['data']
+                else:
+                    print(f"缓存已过期: {cache_key}")
+                    del stock_pool_data_cache[cache_key]
+                    cached_data = None
             else:
-                print(f"缓存已过期: {cache_key}")
-                del stock_pool_data_cache[cache_key]
                 cached_data = None
-        else:
-            cached_data = None
         
         if cached_data is None:
             print(f"批量获取股票数据: {cache_key}")
@@ -1060,16 +1062,17 @@ def stock_scan():
                     continue
             
             # 检查缓存大小，如果超过限制则删除最旧的
-            if len(stock_pool_data_cache) >= MAX_CACHE_SIZE:
-                oldest_key = next(iter(stock_pool_data_cache))
-                del stock_pool_data_cache[oldest_key]
-                print(f"缓存已满，删除最旧条目: {oldest_key}")
-            
-            # 存入缓存（带时间戳）
-            stock_pool_data_cache[cache_key] = {
-                'data': cached_data,
-                'timestamp': datetime.now()
-            }
+            with cache_lock:
+                if len(stock_pool_data_cache) >= MAX_CACHE_SIZE:
+                    oldest_key = next(iter(stock_pool_data_cache))
+                    del stock_pool_data_cache[oldest_key]
+                    print(f"缓存已满，删除最旧条目: {oldest_key}")
+                
+                # 存入缓存（带时间戳）
+                stock_pool_data_cache[cache_key] = {
+                    'data': cached_data,
+                    'timestamp': datetime.now()
+                }
         
         # 扫描每只股票的信号
         scan_results = []
@@ -1116,8 +1119,9 @@ def stock_scan():
         scan_results.sort(key=lambda x: x['signal_count'], reverse=True)
         
         # 增加计数
-        stock_scan_count_by_ip[user_ip] = current_count + 1
-        remaining_count = FREE_STOCK_SCAN_LIMIT - stock_scan_count_by_ip[user_ip]
+        with scan_lock:
+            stock_scan_count_by_fingerprint[fingerprint] = current_count + 1
+            remaining_count = FREE_STOCK_SCAN_LIMIT - stock_scan_count_by_fingerprint[fingerprint]
         
         return jsonify({
             'success': True,

@@ -967,15 +967,20 @@ async function runStockScan() {
     
     // 重试配置
     const MAX_RETRIES = 3;
-    const RETRY_DELAY = 2000; // 2秒
+    const RETRY_DELAY = 3000; // 3秒
     let retryCount = 0;
+    let isCompleted = false;
     
     async function attemptScan() {
+        let controller = null;
+        let timeoutId = null;
+        
         try {
-            // 使用 fetch 发送 POST 请求，然后处理 SSE 流
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => {
-                controller.abort();
+            controller = new AbortController();
+            timeoutId = setTimeout(() => {
+                if (controller && !isCompleted) {
+                    controller.abort();
+                }
             }, 300000); // 5分钟超时
             
             const response = await fetch(`${API_BASE}/api/stock_scan_stream`, {
@@ -990,15 +995,16 @@ async function runStockScan() {
             });
             
             clearTimeout(timeoutId);
+            timeoutId = null;
             
             if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+                const errorText = await response.text();
+                throw new Error(`服务器错误 (${response.status}): ${errorText}`);
             }
             
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
-            let lastProgressTime = Date.now();
             
             while (true) {
                 const { done, value } = await reader.read();
@@ -1006,7 +1012,6 @@ async function runStockScan() {
                 
                 // 解码数据并添加到缓冲区
                 buffer += decoder.decode(value, { stream: true });
-                lastProgressTime = Date.now();
                 
                 // 解析 SSE 消息
                 const lines = buffer.split('\n');
@@ -1015,7 +1020,9 @@ async function runStockScan() {
                 for (const line of lines) {
                     if (line.startsWith('data: ')) {
                         try {
-                            const jsonStr = line.substring(6);
+                            const jsonStr = line.substring(6).trim();
+                            if (!jsonStr) continue;
+                            
                             const event = JSON.parse(jsonStr);
                             
                             switch (event.type) {
@@ -1057,6 +1064,7 @@ async function runStockScan() {
                                     
                                 case 'complete':
                                     // 扫描完成
+                                    isCompleted = true;
                                     scanProgress.style.display = 'none';
                                     updateScanCountDisplay(event.data.remaining_count);
                                     renderScanResult(event.data);
@@ -1073,7 +1081,8 @@ async function runStockScan() {
                                     throw new Error(event.error);
                             }
                         } catch (e) {
-                            if (e.message && e.message.includes('limit_exceeded')) {
+                            // 如果是限制错误或已完成，直接抛出
+                            if (event && event.limit_exceeded) {
                                 throw e;
                             }
                             console.error('解析 SSE 消息失败:', e, line);
@@ -1081,14 +1090,27 @@ async function runStockScan() {
                     }
                 }
             }
+            
+            // 如果循环结束但没有收到 complete 事件
+            if (!isCompleted) {
+                throw new Error('连接意外中断，未收到完成信号');
+            }
+            
         } catch (error) {
             console.error('扫描失败:', error);
             
+            // 清理超时定时器
+            if (timeoutId) {
+                clearTimeout(timeoutId);
+                timeoutId = null;
+            }
+            
             // 检查是否可以重试
-            if (retryCount < MAX_RETRIES && error.name !== 'AbortError') {
+            if (retryCount < MAX_RETRIES && error.name !== 'AbortError' && !isCompleted) {
                 retryCount++;
                 scanProgressText.textContent = `连接中断，正在重试 (${retryCount}/${MAX_RETRIES})...`;
                 scanProgressDetail.textContent = `错误: ${error.message}`;
+                scanProgressBar.style.width = '0%';
                 
                 // 等待后重试
                 await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
